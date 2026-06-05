@@ -708,4 +708,25 @@ mod mlsag_tests {
         }
 
     } // end proptest!
+
+    #[test]
+    // `verify` should reject an empty ring with an error rather than panicking.
+    // With an empty ring the recomputed-challenge buffer is empty, the
+    // verification loop never runs, and the final `recomputed_c[0]` read would
+    // otherwise panic (index out of bounds). A panic in consensus validation
+    // aborts the enclave, so this must be a clean rejection.
+    fn test_verify_rejects_empty_ring() {
+        let generator = generators(0);
+        let output_commitment = CompressedCommitment::new(0, Scalar::ZERO, &generator);
+        let signature = RingMLSAG {
+            c_zero: CurveScalar::from(0u64),
+            responses: Vec::new(),
+            key_image: KeyImage::from(1u64),
+        };
+        let ring: &[ReducedTxOut] = &[];
+        assert!(matches!(
+            signature.verify(&[0u8; 32], ring, &output_commitment),
+            Err(Error::IndexOutOfBounds)
+        ));
+    }
 }
