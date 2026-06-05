@@ -103,3 +103,43 @@ derive_debug_and_display_hex_from_as_ref!(KeyImage);
 
 #[cfg(feature = "prost")]
 derive_prost_message_from_repr_bytes!(KeyImage);
+
+#[cfg(test)]
+mod redteam_tests {
+    use super::*;
+    use curve25519_dalek::ristretto::CompressedRistretto;
+
+    // RED-TEAM (scalar-mult / point-handling audit) — invariant P1/P5.
+    //
+    // KeyImage::try_from performs a LENGTH-ONLY check (CompressedRistretto::
+    // from_slice, key_image.rs:63/95). It accepts ANY 32 bytes — including
+    // non-decompressable garbage and the identity point — and defers point
+    // validity to verify time (mlsag_verify.rs:48). This documents that the
+    // parse step is lenient; the safety net is the verifier, not the decoder.
+    //
+    // This is the upstream sibling of the Zcash CVE-2026-41584 pattern: an
+    // invalid/degenerate point is constructible from untrusted bytes. MobileCoin
+    // is saved because (a) decompress() returns Option (no panic, unlike Zcash's
+    // unwrap) and (b) verify rejects it (proven in mlsag.rs). A strict decoder
+    // that rejected non-canonical bytes at parse would be cheap hardening.
+    #[test]
+    fn redteam_p1_key_image_try_from_is_length_only() {
+        // All-ones: valid length, not a valid Ristretto encoding.
+        let garbage = [0xffu8; 32];
+        let ki = KeyImage::try_from(garbage)
+            .expect("try_from accepts any 32 bytes (length-only validation)");
+        assert!(
+            ki.point.decompress().is_none(),
+            "all-ones is expected to be non-decompressable"
+        );
+
+        // Identity (all zeros) is a *valid* Ristretto point, also accepted unchecked.
+        let identity = KeyImage::try_from([0u8; 32]).unwrap();
+        assert_eq!(identity.point, CompressedRistretto([0u8; 32]));
+        assert!(identity.point.decompress().is_some());
+
+        // The &[u8] path is likewise length-only (rejects only on wrong length).
+        assert!(KeyImage::try_from(&garbage[..]).is_ok());
+        assert!(KeyImage::try_from(&[0u8; 31][..]).is_err());
+    }
+}

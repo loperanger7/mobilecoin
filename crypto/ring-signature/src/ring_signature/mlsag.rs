@@ -707,5 +707,70 @@ mod mlsag_tests {
             assert_eq!(signature, recovered_signature);
         }
 
+        #[test]
+        // RED-TEAM (P1/P3): the direct MobileCoin analog of Zcash CVE-2026-41584.
+        // An *identity* key image (canonical all-zeros Ristretto encoding) is the
+        // degenerate point that survives Ristretto (which otherwise has no torsion
+        // / non-canonical points). It decompresses successfully, so the ONLY thing
+        // standing between it and acceptance is the MLSAG challenge chain — there
+        // is no explicit identity check on the key image (mlsag_verify.rs:48).
+        // This proves verify cleanly REJECTS it (Err), never accepts, never panics.
+        // If this ever returns Ok, that is a counterfeiting/double-spend finding.
+        fn redteam_p1_identity_key_image_is_rejected(
+            num_mixins in 1..17usize,
+            seed in any::<[u8; 32]>(),
+        ) {
+            let mut rng: RngType = SeedableRng::from_seed(seed);
+            let pseudo_output_blinding = Scalar::random(&mut rng);
+            let params = RingMLSAGParameters::random(num_mixins, pseudo_output_blinding, &mut rng);
+            let mut signature = params.sign(&mut rng).unwrap();
+
+            // Identity point = all-zeros canonical Ristretto encoding.
+            signature.key_image = KeyImage::try_from([0u8; 32]).unwrap();
+
+            let output_commitment = CompressedCommitment::new(
+                params.value, params.pseudo_output_blinding, &params.generator);
+
+            // Must be a clean rejection: never Ok, never a panic.
+            assert!(signature
+                .verify(&params.message, &params.ring, &output_commitment)
+                .is_err());
+        }
+
     } // end proptest!
+
+    // ===================================================================
+    // RED-TEAM (scalar-mult / point-handling audit) — invariant P5: liveness
+    //
+    // Motivated by Zcash CVE-2026-41584 (an attacker-supplied degenerate
+    // input panics the verifier instead of being cleanly rejected). Here the
+    // degenerate input is an *empty ring*: RingMLSAG::verify allocates a
+    // zero-length `recomputed_c`, the verification loop never runs, and
+    // mlsag_verify.rs then indexes `recomputed_c[0]` -> out-of-bounds panic.
+    //
+    // A panic inside consensus validation = SGX enclave abort = liveness hit.
+    // Transaction-level guards reject empty rings today, so this is a
+    // defense-in-depth / crate-API-robustness bug, not a live double-spend.
+    // The crate API must return Err, never panic.
+    //
+    // FIXED: mlsag_verify.rs now rejects an empty ring with
+    // Error::IndexOutOfBounds before the out-of-bounds read. This test asserts
+    // the clean rejection (Err), and that no panic occurs.
+    // ===================================================================
+    #[test]
+    fn redteam_p5_empty_ring_verify_is_rejected_not_panic() {
+        let generator = generators(0u64);
+        let output_commitment = CompressedCommitment::new(0, Scalar::ZERO, &generator);
+        let sig = RingMLSAG {
+            c_zero: CurveScalar::from(0u64),
+            responses: Vec::new(),
+            key_image: KeyImage::from(1u64),
+        };
+        let ring: &[ReducedTxOut] = &[];
+        // Must return Err (no panic) now that the empty-ring guard exists.
+        assert!(matches!(
+            sig.verify(&[0u8; 32], ring, &output_commitment),
+            Err(Error::IndexOutOfBounds)
+        ));
+    }
 }

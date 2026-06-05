@@ -32,6 +32,15 @@ impl<R: Ring> MlsagVerify<'_, R> {
     pub fn verify(&self, recomputed_c: &mut [Scalar]) -> Result<(), Error> {
         let ring_size = self.ring.size();
 
+        // A ring must have at least one member. With an empty ring the
+        // verification loop below never runs, leaving `recomputed_c` empty, and
+        // the final `recomputed_c[0]` read would panic (out-of-bounds) instead
+        // of returning an error. A panic in consensus validation aborts the SGX
+        // enclave, so reject the empty ring explicitly here.
+        if ring_size == 0 {
+            return Err(Error::IndexOutOfBounds);
+        }
+
         // `responses` must contain `2 * ring_size` elements.
         if self.responses.len() != 2 * ring_size {
             return Err(Error::LengthMismatch(2 * ring_size, self.responses.len()));
