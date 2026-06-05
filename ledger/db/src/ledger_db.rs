@@ -26,6 +26,7 @@ use mc_util_telemetry::{
     mark_span_as_active, start_block_span, telemetry_static_key, tracer, Key, Span,
 };
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -747,8 +748,24 @@ impl LedgerDB {
             return Err(Error::MissingMaskedAmount);
         }
 
-        // Check that none of the key images were previously spent.
+        // Check that none of the key images were previously spent, AND that this
+        // block does not spend the same key image twice.
+        //
+        // Defense-in-depth: the ledger's write path (`write_key_images`) checks
+        // each key image via `contains_key_image`, which opens a fresh RO
+        // transaction that CANNOT see this block's own pending writes, and the
+        // subsequent `put` silently overwrites. So the ledger alone does not
+        // catch an intra-block duplicate — without the set below, the consensus
+        // enclave's `form_block` dedup would be the ONLY thing preventing two
+        // transactions in one block from spending the same output (a
+        // double-spend). Enforce intra-block uniqueness here as well, so any
+        // future path that appends a block without going through enclave
+        // consensus (block sync, archive restore, tooling) is still protected.
+        let mut block_key_images = BTreeSet::new();
         for key_image in &block_contents.key_images {
+            if !block_key_images.insert(key_image.as_bytes()) {
+                return Err(Error::KeyImageAlreadySpent);
+            }
             if self
                 .check_key_image_impl(key_image, db_transaction)?
                 .is_some()
@@ -2553,6 +2570,35 @@ mod ledger_db_test {
                 BLOCK_VERSION,
                 vec![create_test_tx_out(BLOCK_VERSION, &mut rng)],
                 block_one_key_images,
+                &mut rng,
+            ),
+            Err(Error::KeyImageAlreadySpent)
+        );
+    }
+
+    #[test]
+    /// RED-TEAM (double-spend, defense-in-depth): a single block that spends the
+    /// SAME key image twice must be rejected by the ledger itself, not only by
+    /// the consensus enclave's `form_block`. Before the intra-block dedup guard
+    /// in `validate_append_block`, the ledger silently accepted this: the
+    /// write-path dedup (`write_key_images` -> `contains_key_image`) opens a
+    /// fresh RO txn that cannot see the block's own pending writes, and the
+    /// `put` overwrites. (NOTE: ledger tests link native LMDB and may not build
+    /// in an isolated local checkout; this runs in CI / the mob container.)
+    fn append_block_rejects_intra_block_duplicate_key_image() {
+        let mut rng: StdRng = SeedableRng::from_seed([1u8; 32]);
+        let mut ledger_db = create_db();
+
+        add_origin_block(&mut ledger_db);
+
+        // The SAME key image appears twice within a single block.
+        let ki = KeyImage::from(rng.next_u64());
+        assert_eq!(
+            add_txos_and_key_images_to_ledger(
+                &mut ledger_db,
+                BLOCK_VERSION,
+                vec![create_test_tx_out(BLOCK_VERSION, &mut rng)],
+                vec![ki, ki],
                 &mut rng,
             ),
             Err(Error::KeyImageAlreadySpent)

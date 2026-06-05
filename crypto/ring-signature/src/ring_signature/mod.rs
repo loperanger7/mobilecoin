@@ -242,4 +242,36 @@ mod tests {
             hash_to_point(&RistrettoPublic::from(RISTRETTO_BASEPOINT_POINT))
         )
     }
+
+    // RED-TEAM (counterfeit, DS-6): MobileCoin's value conservation relies on the
+    // per-token value generators H_j and the blinding base G being independent
+    // (no findable nontrivial linear relation). The full justification reduces to
+    // the discrete-log assumption in the random-oracle model (see the audit
+    // write-up: generator-independence-analysis.md). This test does NOT prove
+    // independence; it is a cheap construction-regression guard catching the
+    // obvious ways the construction could break value conservation:
+    //   * a value generator equal to the identity (would make value invisible)
+    //   * a value base equal to the blinding base G (collapses value and blinding)
+    //   * distinct token ids producing the same value base (cross-token forgery)
+    #[test]
+    fn redteam_token_generators_are_distinct_and_nontrivial() {
+        use curve25519_dalek::traits::Identity;
+
+        let ids: [u64; 7] = [0, 1, 2, 3, 1000, u32::MAX as u64, u64::MAX];
+        let mut seen = alloc::collections::BTreeSet::new();
+        for &id in &ids {
+            let g = generators(id);
+            // Blinding base is the standard ristretto basepoint (G).
+            assert_eq!(g.B_blinding, B_BLINDING);
+            // A value generator is never the identity ("zero") point.
+            assert_ne!(g.B, RistrettoPoint::identity());
+            // The value base never equals the blinding base.
+            assert_ne!(g.B, g.B_blinding);
+            // Distinct token ids produce distinct value bases.
+            assert!(
+                seen.insert(g.B.compress().to_bytes()),
+                "two token ids share a value base"
+            );
+        }
+    }
 }

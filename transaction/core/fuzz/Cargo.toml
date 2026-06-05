@@ -1,0 +1,45 @@
+# Red-team fuzz crate for the scalar-mult / point-handling audit.
+# Detached from the parent workspace via the empty [workspace] table below so
+# the fuzz tooling (libfuzzer-sys, cargo-fuzz) doesn't perturb the main build.
+# Because it is a detached workspace it does NOT inherit the parent's
+# [patch.crates-io], so that section is replicated below (the path deps need it).
+[package]
+name = "mc-transaction-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Must match the versions mc-transaction-core uses so the RangeProof /
+# CompressedRistretto types are identical across the dependency graph.
+bulletproofs-og = { version = "3.0.0-pre.1", default-features = false }
+curve25519-dalek = { version = "4", default-features = false }
+rand_hc = "0.3"
+rand_core = "0.6"
+
+mc-transaction-core = { path = ".." }
+mc-crypto-ring-signature = { path = "../../../crypto/ring-signature" }
+
+[[bin]]
+name = "rangeproof_decode_verify"
+path = "fuzz_targets/rangeproof_decode_verify.rs"
+test = false
+doc = false
+bench = false
+
+# Detach from the parent workspace.
+[workspace]
+
+# Replicated from the root Cargo.toml [patch.crates-io] (detached workspaces do
+# not inherit patches). Keep in sync with the parent.
+[patch.crates-io]
+bulletproofs-og = { git = "https://github.com/mobilecoinfoundation/bulletproofs.git", rev = "9abfdc054d9ba65f1e185ea1e6eff3947ce879dc" }
+mbedtls = { git = "https://github.com/mobilecoinfoundation/rust-mbedtls.git", rev = "f82523478a1dd813ca381c190175355d249a8123" }
+mbedtls-sys-auto = { git = "https://github.com/mobilecoinfoundation/rust-mbedtls.git", rev = "f82523478a1dd813ca381c190175355d249a8123" }
+lmdb-rkv = { git = "https://github.com/mozilla/lmdb-rs", rev = "df1c2f5" }
+schnorrkel-og = { git = "https://github.com/mobilecoinfoundation/schnorrkel.git", rev = "049bf9d30f3bbe072e2ad1b5eefdf0f3c851215e" }
+serde_cbor = { git = "https://github.com/mobilecoinofficial/cbor", rev = "4c886a7c1d523aae1ec4aa7386f402cb2f4341b5" }

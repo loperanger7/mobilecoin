@@ -160,4 +160,57 @@ mod tests {
         let result: CurveScalar = mc_util_serial::decode(&bytes).unwrap();
         assert_eq!(five, result);
     }
+
+    // ===================================================================
+    // RED-TEAM (scalar-mult / point-handling audit) — invariant P2:
+    // scalar non-canonical malleability (Codex flagged this as the second
+    // headline residual after identity-point handling).
+    //
+    // CurveScalar's wire decoder (ReprBytes::from_bytes -> from_bytes_mod_order)
+    // is LENIENT: it accepts a non-canonical 32-byte encoding `l + k` and
+    // silently reduces it to `k`. The question is whether that leniency creates
+    // consensus malleability (two wire encodings -> two accepted, differently
+    // identified transactions). This test pins the actual behavior:
+    //
+    //   IN:  lenient  — non-canonical `l + 2` is ACCEPTED and reduced to 2.
+    //   OUT: canonical — re-encoding (`as_bytes`/`to_bytes`) is the canonical
+    //        encoding of 2, identical to a value parsed from canonical bytes.
+    //
+    // Because the typed value and its re-encoding/digest are canonical, two
+    // distinct wire encodings collapse to ONE identical typed CurveScalar. So
+    // there is no txid or key-image malleability at the consensus level (txid is
+    // a structured digest of the typed Tx; key images are canonical points).
+    // The leniency itself is a "be strict in what you accept" hardening
+    // opportunity, NOT a consensus malleability bug. SAFE-with-hardening-rec.
+    // ===================================================================
+    #[test]
+    fn redteam_p2_noncanonical_scalar_reduces_and_canonicalizes() {
+        // `l + 2` as raw little-endian bytes (l = the group order). Reduces to 2.
+        let l_plus_two_bytes: [u8; 32] = [
+            0xef, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9,
+            0xde, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x10,
+        ];
+        // Canonical encoding of the scalar 2.
+        let mut canonical_two = [0u8; 32];
+        canonical_two[0] = 2;
+
+        let from_noncanonical = CurveScalar::from_bytes_mod_order(l_plus_two_bytes);
+        let from_canonical = CurveScalar::from_bytes_mod_order(canonical_two);
+
+        // (1) LENIENT IN: non-canonical input is accepted and reduced to 2.
+        assert_eq!(from_noncanonical.scalar, from_canonical.scalar);
+        assert_eq!(from_noncanonical, from_canonical);
+
+        // (2) CANONICAL OUT: both re-encode to the canonical bytes of 2, so two
+        //     distinct wire encodings collapse to one identical typed value.
+        assert_eq!(from_noncanonical.as_bytes(), &canonical_two);
+        assert_eq!(from_noncanonical.as_bytes(), from_canonical.as_bytes());
+
+        // (3) The wire decoder (try_from &[u8], used by prost) also ACCEPTS the
+        //     non-canonical encoding rather than rejecting it (documents the
+        //     leniency that a strict decoder would instead reject).
+        let via_wire = CurveScalar::try_from(&l_plus_two_bytes[..]).unwrap();
+        assert_eq!(via_wire, from_canonical);
+    }
 }
