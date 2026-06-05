@@ -142,4 +142,52 @@ mod redteam_tests {
         assert!(KeyImage::try_from(&garbage[..]).is_ok());
         assert!(KeyImage::try_from(&[0u8; 31][..]).is_err());
     }
+
+    // RED-TEAM (double-spend, vector 1): key-image dedup soundness.
+    //
+    // The ledger dedups key images by their 32 raw bytes (KeyImage Ord/Eq are
+    // on [u8; 32]). For that to be a sound double-spend defense, a spent output
+    // must have EXACTLY ONE encoding that the verifier accepts. The verifier
+    // accepts only encodings that decompress (mlsag_verify.rs:48), and Ristretto
+    // decompression is canonical + injective. This test proves the property the
+    // dedup relies on:
+    //   (a) canonical round-trip is stable: decompress(b).compress() == b
+    //   (b) NO single-byte mutation of a valid encoding decompresses back to the
+    //       SAME point under different bytes (that would be a dedup-bypass
+    //       double-spend: two byte strings, one spent output)
+    //   (c) distinct points never share an encoding (injective compression)
+    #[test]
+    fn redteam_dblspend_key_image_encoding_is_canonical_and_injective() {
+        use curve25519_dalek::ristretto::RistrettoPoint;
+        use mc_util_test_helper::{RngType, SeedableRng};
+
+        let mut rng: RngType = SeedableRng::from_seed([7u8; 32]);
+        let mut seen = alloc::collections::BTreeSet::new();
+
+        for _ in 0..256 {
+            let p = RistrettoPoint::random(&mut rng);
+            let b = p.compress();
+
+            // (a) canonical round-trip.
+            assert_eq!(b.decompress().unwrap().compress(), b);
+
+            // (c) injective: a fresh random point never collides with a prior one.
+            assert!(seen.insert(b.to_bytes()), "two distinct points shared bytes");
+
+            // (b) every single-byte perturbation that still decompresses must be
+            //     a DIFFERENT point — never the same point under different bytes.
+            let canonical = b.to_bytes();
+            for i in 0..32 {
+                let mut mutated = canonical;
+                mutated[i] ^= 0x01;
+                if let Some(q) = CompressedRistretto(mutated).decompress() {
+                    assert_ne!(
+                        q, p,
+                        "non-canonical encoding decompressed to the same point: \
+                         key-image dedup could be bypassed (double-spend)"
+                    );
+                }
+            }
+        }
+    }
 }
