@@ -106,6 +106,12 @@ pub fn check_range_proofs<T: RngCore + CryptoRng>(
 /// `slice` - (in) the slice with the data to use
 fn resize_slice_to_pow2<T: Clone>(slice: &[T]) -> Result<Vec<T>, Error> {
     let len: usize = slice.len();
+    // An empty slice has no final element to pad with: the `slice[len - 1]` read
+    // below would panic (index out of bounds) rather than returning an error.
+    // Reject empty input explicitly.
+    if len == 0 {
+        return Err(Error::ResizeError);
+    }
     if let Some(next_power_of_two) = len.checked_next_power_of_two() {
         let diff = next_power_of_two - len;
         let mut pow2_slice: Vec<T> = Vec::with_capacity(next_power_of_two);
@@ -183,5 +189,16 @@ pub mod tests {
             Ok(_) => panic!(),
             Err(_e) => {} // This is expected.
         }
+    }
+
+    #[test]
+    // `resize_slice_to_pow2` should reject an empty slice with an error rather
+    // than panicking. An empty slice has no final element to pad with, so the
+    // `slice[slice.len() - 1]` read would otherwise panic (index out of bounds).
+    // This is reached by `check_range_proofs` when given an empty commitment set;
+    // a panic in range-proof verification aborts the enclave.
+    fn test_resize_slice_to_pow2_rejects_empty() {
+        let empty: &[u8] = &[];
+        assert!(matches!(resize_slice_to_pow2(empty), Err(Error::ResizeError)));
     }
 }
